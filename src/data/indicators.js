@@ -2,38 +2,40 @@
 // 数据格式: { time: Unix时间戳, value: 指标值 }
 // 注：这是基于历史价格推导出的近似值，真实数据应从链上分析平台获取
 
+// 使用 UTC 0 点的秒级时间戳，与真实交易所 K 线（Binance/Coinbase）对齐
+// 避免本地时区导致主副图垂直错位
 const generateIndicatorData = (generator) => {
   const data = []
-  const startDate = new Date('2020-01-01')
-  const endDate = new Date('2024-06-01')
-  let currentDate = new Date(startDate)
+  const startMs = Date.UTC(2020, 0, 1)
+  const endMs = Date.UTC(2024, 5, 1) // 2024-06-01
+  const dayMs = 86400000
   let lastValue = generator.initValue
   let pointIndex = 1
-  
-  while (currentDate <= endDate) {
-    const time = Math.floor(currentDate.getTime() / 1000)
-    const dateStr = currentDate.toISOString().split('T')[0]
-    
+
+  for (let offset = 0; startMs + offset * dayMs <= endMs; offset++) {
+    const currentMs = startMs + offset * dayMs
+    const time = Math.floor(currentMs / 1000)
+    const dateStr = new Date(currentMs).toISOString().split('T')[0]
+
     // 检查关键点
     if (pointIndex < generator.points.length && dateStr === generator.points[pointIndex].date) {
       lastValue = generator.points[pointIndex].value
       pointIndex++
     }
-    
+
     // 添加随机波动
     const noise = (Math.random() - 0.5) * generator.volatility
     const trend = (generator.points[Math.min(pointIndex, generator.points.length - 1)].value - lastValue) * 0.02
     const value = lastValue + noise + trend
-    
+
     data.push({
       time,
       value: parseFloat(value.toFixed(4))
     })
-    
+
     lastValue = value
-    currentDate.setDate(currentDate.getDate() + 1)
   }
-  
+
   return data
 }
 

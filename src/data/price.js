@@ -4,8 +4,10 @@
 
 const generatePriceData = () => {
   const data = []
-  const startDate = new Date('2020-01-01')
-  const endDate = new Date('2024-06-01')
+  // 使用 UTC 0 点时间戳，与真实交易所 K 线对齐
+  const startMs = Date.UTC(2020, 0, 1)
+  const endMs = Date.UTC(2024, 5, 1) // 2024-06-01
+  const dayMs = 86400000
   
   // 关键价格节点（模拟真实走势）
   const pricePoints = [
@@ -32,20 +34,20 @@ const generatePriceData = () => {
   ]
 
   // 填充中间数据点
-  const currentDate = new Date(startDate)
   let lastPrice = 7200
   let pointIndex = 1
-  
-  while (currentDate <= endDate) {
-    const time = Math.floor(currentDate.getTime() / 1000)
-    const dateStr = currentDate.toISOString().split('T')[0]
-    
+
+  for (let offset = 0; startMs + offset * dayMs <= endMs; offset++) {
+    const currentMs = startMs + offset * dayMs
+    const time = Math.floor(currentMs / 1000)
+    const dateStr = new Date(currentMs).toISOString().split('T')[0]
+
     // 检查是否到达关键节点
     if (pointIndex < pricePoints.length && dateStr === pricePoints[pointIndex].date) {
       lastPrice = pricePoints[pointIndex].price
       pointIndex++
     }
-    
+
     // 生成每日K线
     const volatility = lastPrice * 0.03 // 3% 波动率
     const trend = (pricePoints[Math.min(pointIndex, pricePoints.length - 1)].price - lastPrice) * 0.02
@@ -54,7 +56,7 @@ const generatePriceData = () => {
     const open = lastPrice
     const high = Math.max(open, close) + Math.random() * volatility * 0.5
     const low = Math.min(open, close) - Math.random() * volatility * 0.5
-    
+
     data.push({
       time,
       open: Math.round(open),
@@ -62,11 +64,10 @@ const generatePriceData = () => {
       low: Math.round(Math.max(100, low)),
       close: Math.round(close)
     })
-    
+
     lastPrice = close
-    currentDate.setDate(currentDate.getDate() + 1)
   }
-  
+
   return data
 }
 

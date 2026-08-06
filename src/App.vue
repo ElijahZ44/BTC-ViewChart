@@ -16,13 +16,15 @@
           <div class="text-right">
             <div class="text-sm text-gray-400">当前价格</div>
             <div class="text-lg font-bold" :class="priceChange >= 0 ? 'text-green-500' : 'text-red-500'">
-              ${{ formatNumber(currentPrice) }}
+              <span v-if="priceLoading" class="text-gray-500">加载中...</span>
+              <span v-else>${{ formatNumber(currentPrice) }}</span>
             </div>
           </div>
           <div class="text-right">
             <div class="text-sm text-gray-400">24h涨跌</div>
             <div class="text-lg font-bold" :class="priceChange >= 0 ? 'text-green-500' : 'text-red-500'">
-              {{ priceChange >= 0 ? '+' : '' }}{{ priceChange.toFixed(2) }}%
+              <span v-if="priceLoading" class="text-gray-500">--</span>
+              <span v-else>{{ priceChange >= 0 ? '+' : '' }}{{ priceChange.toFixed(2) }}%</span>
             </div>
           </div>
         </div>
@@ -31,29 +33,65 @@
 
     <!-- 主体内容 -->
     <main class="max-w-7xl mx-auto p-6">
-      <!-- 时间周期选择 -->
-      <div class="flex items-center gap-2 mb-4">
-        <span class="text-sm text-gray-400">时间周期：</span>
-        <button
-          v-for="period in periods"
-          :key="period.value"
-          @click="currentPeriod = period.value"
-          class="px-3 py-1 rounded text-sm transition-colors"
-          :class="currentPeriod === period.value 
-            ? 'bg-btc-orange text-white' 
-            : 'bg-btc-card text-gray-400 hover:text-white hover:bg-btc-border'"
-        >
-          {{ period.label }}
-        </button>
+      <!-- 数据源 + 时间周期选择 -->
+      <div class="flex flex-wrap items-center gap-4 mb-4">
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-gray-400">数据源：</span>
+          <button
+            v-for="src in sourceOptions"
+            :key="src.key"
+            @click="switchSource(src.key)"
+            :disabled="loading"
+            class="px-3 py-1 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            :class="currentSource === src.key 
+              ? 'bg-btc-orange text-white' 
+              : 'bg-btc-card text-gray-400 hover:text-white hover:bg-btc-border'"
+          >
+            {{ src.label }}
+            <span class="text-xs opacity-70">({{ src.source }})</span>
+          </button>
+        </div>
+        <div class="w-px h-5 bg-btc-border"></div>
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-gray-400">时间周期：</span>
+          <button
+            v-for="period in periods"
+            :key="period.value"
+            @click="currentPeriod = period.value"
+            class="px-3 py-1 rounded text-sm transition-colors"
+            :class="currentPeriod === period.value 
+              ? 'bg-btc-orange text-white' 
+              : 'bg-btc-card text-gray-400 hover:text-white hover:bg-btc-border'"
+          >
+            {{ period.label }}
+          </button>
+        </div>
       </div>
 
       <!-- K线主图 -->
-      <div class="bg-btc-card rounded-lg border border-btc-border p-4 mb-4">
+      <div class="bg-btc-card rounded-lg border border-btc-border p-4 mb-4 relative">
         <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-semibold">BTC/USD K线走势</h2>
+          <h2 class="text-lg font-semibold">
+            {{ currentSourceInfo.label }} K线走势
+            <span class="text-xs font-normal text-gray-500 ml-2">数据来源: {{ currentSourceInfo.source }}</span>
+          </h2>
           <span class="text-sm text-gray-400">每日收盘价格</span>
         </div>
         <div ref="mainChartRef" class="w-full" style="height: 400px;"></div>
+        <!-- loading 覆盖层 -->
+        <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-btc-card/80 rounded-lg">
+          <div class="flex items-center gap-2 text-gray-400">
+            <svg class="animate-spin h-5 w-5 text-btc-orange" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            <span>正在加载真实行情数据...</span>
+          </div>
+        </div>
+        <!-- error 提示 -->
+        <div v-if="errorMsg && !loading" class="absolute top-2 right-2 bg-red-500/20 border border-red-500/50 text-red-400 text-xs px-3 py-1 rounded">
+          {{ errorMsg }}
+        </div>
       </div>
 
       <!-- 副图指标区 -->
@@ -93,6 +131,9 @@
             <span class="text-gray-500">逃顶区间：</span>
             <span class="text-red-500">{{ currentIndicatorInfo.sellRange }}</span>
           </div>
+          <div class="mt-2 text-xs text-gray-600">
+            * 链上指标当前为近似历史数据，与主图真实价格时间轴对齐；接入 Glassnode/CryptoQuant 付费 API 后可获取真实值。
+          </div>
         </div>
 
         <!-- 副图 -->
@@ -108,23 +149,35 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { createChart, LineStyle, CrosshairMode } from 'lightweight-charts'
-import { priceData } from './data/price.js'
+import { DATA_SOURCES, loadKlines, loadTicker } from './data/api.js'
 import { mvrvData, nuplData, puellData, reserveRiskData } from './data/indicators.js'
 
-// 响应式数据
+// ===== DOM 引用 =====
 const mainChartRef = ref(null)
 const subChartRef = ref(null)
 let mainChart = null
 let subChart = null
 let mainSeries = null
 let subSeries = null
+let syncing = false // 防止主副图联动循环
 
+// ===== 状态 =====
+const currentSource = ref('BTCUSDT')
 const currentPeriod = ref('1y')
 const currentIndicator = ref('mvrv')
+
+const klinesData = ref([]) // 当前数据源的完整 K 线
+const loading = ref(false)
+const errorMsg = ref('')
+
 const currentPrice = ref(0)
 const priceChange = ref(0)
+const priceLoading = ref(true)
+
+const sourceOptions = Object.values(DATA_SOURCES)
+const currentSourceInfo = computed(() => DATA_SOURCES[currentSource.value])
 
 const periods = [
   { label: '3个月', value: '3m' },
@@ -175,16 +228,14 @@ const indicatorInfo = {
 const currentIndicatorInfo = computed(() => {
   const info = indicatorInfo[currentIndicator.value]
   const data = info.data
-  const current = data[data.length - 1]?.value || 0
-  return {
-    ...info,
-    current
-  }
+  const current = data.length ? data[data.length - 1].value : 0
+  return { ...info, current }
 })
 
-// 过滤时间周期数据
+// ===== 数据过滤 =====
 const filteredPriceData = computed(() => {
-  const data = [...priceData]
+  const data = klinesData.value
+  if (!data.length) return []
   if (currentPeriod.value === 'all') return data
   const now = data[data.length - 1].time
   const months = { '3m': 3, '6m': 6, '1y': 12, '2y': 24 }
@@ -193,7 +244,8 @@ const filteredPriceData = computed(() => {
 })
 
 const filteredIndicatorData = computed(() => {
-  const data = [...indicatorInfo[currentIndicator.value].data]
+  const data = indicatorInfo[currentIndicator.value].data
+  if (!data.length) return []
   if (currentPeriod.value === 'all') return data
   const now = data[data.length - 1].time
   const months = { '3m': 3, '6m': 6, '1y': 12, '2y': 24 }
@@ -201,12 +253,11 @@ const filteredIndicatorData = computed(() => {
   return data.filter(d => d.time >= cutoffTime)
 })
 
-// 初始化图表
+// ===== 图表初始化（只创建一次，绑定一次联动） =====
 const initCharts = () => {
   if (!mainChartRef.value || !subChartRef.value) return
 
-  // 主图配置
-  mainChart = createChart(mainChartRef.value, {
+  const commonOptions = {
     layout: {
       background: { type: 'solid', color: '#161B22' },
       textColor: '#9CA3AF',
@@ -230,15 +281,11 @@ const initCharts = () => {
         labelBackgroundColor: '#F7931A',
       },
     },
-    rightPriceScale: {
-      borderColor: '#30363D',
-    },
-    timeScale: {
-      borderColor: '#30363D',
-      timeVisible: false,
-    },
-  })
+    rightPriceScale: { borderColor: '#30363D' },
+    timeScale: { borderColor: '#30363D', timeVisible: false },
+  }
 
+  mainChart = createChart(mainChartRef.value, commonOptions)
   mainSeries = mainChart.addCandlestickSeries({
     upColor: '#26A69A',
     downColor: '#EF5350',
@@ -248,98 +295,118 @@ const initCharts = () => {
     wickDownColor: '#EF5350',
   })
 
-  // 副图配置
+  // 副图用更深的背景以示区分
   subChart = createChart(subChartRef.value, {
-    layout: {
-      background: { type: 'solid', color: '#0D1117' },
-      textColor: '#9CA3AF',
-    },
-    grid: {
-      vertLines: { color: '#30363D' },
-      horzLines: { color: '#30363D' },
-    },
-    crosshair: {
-      mode: CrosshairMode.Normal,
-      vertLine: {
-        color: '#F7931A',
-        width: 1,
-        style: LineStyle.Dashed,
-        labelBackgroundColor: '#F7931A',
-      },
-      horzLine: {
-        color: '#F7931A',
-        width: 1,
-        style: LineStyle.Dashed,
-        labelBackgroundColor: '#F7931A',
-      },
-    },
-    rightPriceScale: {
-      borderColor: '#30363D',
-    },
-    timeScale: {
-      borderColor: '#30363D',
-      timeVisible: false,
-    },
+    ...commonOptions,
+    layout: { ...commonOptions.layout, background: { type: 'solid', color: '#0D1117' } },
   })
-
   subSeries = subChart.addAreaSeries({
     lineColor: '#F7931A',
     topColor: 'rgba(247, 147, 26, 0.4)',
     bottomColor: 'rgba(247, 147, 26, 0.05)',
     lineWidth: 2,
   })
-}
 
-// 更新图表数据
-const updateCharts = () => {
-  if (!mainSeries || !subSeries) return
-
-  // 主图数据
-  mainSeries.setData(filteredPriceData.value)
-  mainChart.timeScale().fitContent()
-
-  // 副图数据
-  const indicatorData = filteredIndicatorData.value.map(d => ({
-    time: d.time,
-    value: d.value
-  }))
-  subSeries.setData(indicatorData)
-  subChart.timeScale().fitContent()
-
-  // 同步时间轴
+  // 主副图双向联动（带循环保护）
   mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-    if (range) {
-      subChart.timeScale().setVisibleLogicalRange(range)
-    }
+    if (syncing || !range) return
+    syncing = true
+    subChart.timeScale().setVisibleLogicalRange(range)
+    syncing = false
+  })
+  subChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (syncing || !range) return
+    syncing = true
+    mainChart.timeScale().setVisibleLogicalRange(range)
+    syncing = false
   })
 }
 
-// 监听数据变化
-watch([currentPeriod, currentIndicator], () => {
-  nextTick(() => updateCharts())
-})
+// ===== 图表数据更新 =====
+const updateMainChart = () => {
+  if (!mainSeries) return
+  mainSeries.setData(filteredPriceData.value)
+  mainChart.timeScale().fitContent()
+}
 
-// 格式化数字
-const formatNumber = (num) => {
-  if (num >= 1000) {
-    return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+const updateSubChart = () => {
+  if (!subSeries) return
+  const indicatorData = filteredIndicatorData.value.map(d => ({ time: d.time, value: d.value }))
+  subSeries.setData(indicatorData)
+  subChart.timeScale().fitContent()
+}
+
+const updateCharts = () => {
+  updateMainChart()
+  updateSubChart()
+}
+
+// ===== 数据加载 =====
+const loadAll = async () => {
+  loading.value = true
+  errorMsg.value = ''
+  try {
+    // 加载 K 线（缓存优先，后台刷新通过回调更新）
+    const data = await loadKlines(currentSource.value, (fresh) => {
+      klinesData.value = fresh
+      updateMainChart()
+    })
+    klinesData.value = data
+    await nextTick()
+    updateCharts()
+  } catch (err) {
+    console.error('K线加载失败:', err)
+    errorMsg.value = `数据加载失败：${err.message}（已显示模拟数据）`
+    // 失败时 loadKlines 内部已回退到 mock 数据
+  } finally {
+    loading.value = false
   }
+
+  // 加载实时行情（失败不阻塞主流程）
+  priceLoading.value = true
+  try {
+    const ticker = await loadTicker(currentSource.value)
+    currentPrice.value = ticker.price
+    priceChange.value = ticker.changePercent
+  } catch (err) {
+    console.warn('行情加载失败:', err)
+    // 回退：用最后一根 K 线计算
+    const d = klinesData.value
+    if (d.length >= 2) {
+      currentPrice.value = d[d.length - 1].close
+      const prev = d[d.length - 2].close
+      priceChange.value = prev > 0 ? ((currentPrice.value - prev) / prev) * 100 : 0
+    }
+    if (!errorMsg.value) errorMsg.value = '实时行情获取失败，显示K线收盘价'
+  } finally {
+    priceLoading.value = false
+  }
+}
+
+// 切换数据源
+const switchSource = (key) => {
+  if (key === currentSource.value || loading.value) return
+  currentSource.value = key
+}
+
+// ===== 监听 =====
+watch(currentPeriod, () => nextTick(() => updateCharts()))
+watch(currentIndicator, () => nextTick(() => updateSubChart()))
+watch(currentSource, () => loadAll())
+
+// ===== 格式化 =====
+const formatNumber = (num) => {
+  if (num >= 1000) return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
   return num.toFixed(2)
 }
 
 const formatIndicatorValue = (value) => {
-  if (Math.abs(value) >= 10) {
-    return value.toFixed(2)
-  } else if (Math.abs(value) >= 1) {
-    return value.toFixed(3)
-  } else {
-    return value.toFixed(5)
-  }
+  if (Math.abs(value) >= 10) return value.toFixed(2)
+  if (Math.abs(value) >= 1) return value.toFixed(3)
+  return value.toFixed(5)
 }
 
 const getValueColor = (value) => {
-  // 根据指标值返回颜色
-  const info = indicatorInfo[currentIndicator.value]
   if (currentIndicator.value === 'mvrv') {
     return value < 1.5 ? 'text-green-500' : value > 3 ? 'text-red-500' : 'text-btc-orange'
   } else if (currentIndicator.value === 'nupl') {
@@ -352,24 +419,24 @@ const getValueColor = (value) => {
   return 'text-white'
 }
 
+// ===== 响应式 resize =====
+let resizeHandler = null
+
 onMounted(async () => {
   await nextTick()
   initCharts()
-  updateCharts()
+  await loadAll()
 
-  // 更新价格信息
-  const data = filteredPriceData.value
-  if (data.length >= 2) {
-    currentPrice.value = data[data.length - 1].close
-    const prevClose = data[data.length - 2].close
-    priceChange.value = ((currentPrice.value - prevClose) / prevClose) * 100
+  resizeHandler = () => {
+    if (mainChartRef.value) mainChart?.resize(mainChartRef.value.clientWidth, 400)
+    if (subChartRef.value) subChart?.resize(subChartRef.value.clientWidth, 300)
   }
+  window.addEventListener('resize', resizeHandler)
+})
 
-  // 响应式处理
-  const handleResize = () => {
-    mainChart?.resize(mainChartRef.value.clientWidth, 400)
-    subChart?.resize(subChartRef.value.clientWidth, 300)
-  }
-  window.addEventListener('resize', handleResize)
+onBeforeUnmount(() => {
+  if (resizeHandler) window.removeEventListener('resize', resizeHandler)
+  mainChart?.remove()
+  subChart?.remove()
 })
 </script>
