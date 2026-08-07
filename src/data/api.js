@@ -1,41 +1,58 @@
-// 统一数据访问层：封装两个真实数据源（BTCUSDT / BTCUSD）的切换、本地缓存与失败回退
-// 数据源（均走 Binance 公共数据镜像 data-api.binance.vision）：
-//   - BTCUSDT → Binance BTC/USDT
-//   - BTCUSD  → Binance BTC/USDC（近似美元价格）
+// 统一数据访问层：封装多个真实数据源的切换、本地缓存与失败回退
+// 数据源：
+//   - BTCUSDT  → Binance BTC/USDT（最早 2017-08-17，国内直连可用）
+//   - BTCUSD   → Coinbase BTC/USD（最早 2015-07-20，需挂 VPN）
+//   - BTCUSD_CG→ CoinGecko BTC/USD（最早 2013-04-28，需挂 VPN，仅有收盘价）
 
 import { fetchBinanceKlines, fetchBinanceTicker } from './binance.js'
+import { fetchCoinbaseKlines, fetchCoinbaseTicker } from './coinbase.js'
+import { fetchCoinGeckoKlines, fetchCoinGeckoTicker } from './coingecko.js'
 import { priceData as mockPriceData } from './price.js'
-// Coinbase 数据源（BTC-USD）当前网络不可达，保留模块备用
-// 如需启用，导入 coinbase.js 并将 BTCUSD 数据源切换为 fetchCoinbaseKlines
 
 // 数据源定义
-// 两个数据源均使用 Binance 公共数据镜像（data-api.binance.vision），国内访问稳定
-//   - BTCUSDT: 泰达币（USDT）计价
-//   - BTCUSD : 美元稳定币（USDC）计价，近似美元价格
-// 注：真正的 Coinbase BTC-USD 在部分网络环境下不可达，若需切换可改回 fetchCoinbaseKlines
+// startTime 设为 2010-01-01（BTC 诞生初期），各数据源 API 会自动从各自最早可用日期返回数据
+// coverage 字段用于 UI 显示数据覆盖范围
 export const DATA_SOURCES = {
   BTCUSDT: {
     key: 'BTCUSDT',
     label: 'BTC/USDT',
     source: 'Binance',
-    // 从 2020-01-01 拉取至今，覆盖完整牛熊周期，与链上指标数据范围对齐
-    startTime: new Date('2020-01-01').getTime(),
+    coverage: '2017年8月至今',
+    startTime: Date.UTC(2010, 0, 1),
     fetchKlines: (start, end) => fetchBinanceKlines('BTCUSDT', '1d', start, end),
     fetchTicker: () => fetchBinanceTicker('BTCUSDT')
   },
   BTCUSD: {
     key: 'BTCUSD',
     label: 'BTC/USD',
-    source: 'Binance (USDC)',
-    startTime: new Date('2020-01-01').getTime(),
-    fetchKlines: (start, end) => fetchBinanceKlines('BTCUSDC', '1d', start, end),
-    fetchTicker: () => fetchBinanceTicker('BTCUSDC')
+    source: 'Coinbase',
+    coverage: '2015年7月至今（需VPN）',
+    startTime: Date.UTC(2010, 0, 1),
+    fetchKlines: (start, end) => fetchCoinbaseKlines('BTC-USD', start, end),
+    fetchTicker: () => fetchCoinbaseTicker('BTC-USD')
+  },
+  BTCUSD_CG: {
+    key: 'BTCUSD_CG',
+    label: 'BTC/USD 早期',
+    source: 'CoinGecko',
+    coverage: '2013年4月至今（需VPN）',
+    // CoinGecko 最早数据约 2013-04-28
+    startTime: Date.UTC(2013, 3, 28),
+    fetchKlines: (start, end) => fetchCoinGeckoKlines(start, end),
+    fetchTicker: () => fetchCoinGeckoTicker(),
+    note: 'CoinGecko 数据仅有收盘价，OHLC 为近似值（无影线）'
   }
 }
 
 // 缓存配置
+// CoinGecko 拉取较慢（分段请求），缓存时间延长到 24 小时
 const CACHE_PREFIX = 'btc_klines_'
-const CACHE_TTL = 6 * 60 * 60 * 1000 // 6 小时
+const CACHE_TTL_DEFAULT = 6 * 60 * 60 * 1000 // 6 小时
+const CACHE_TTL_COINGECKO = 24 * 60 * 60 * 1000 // 24 小时
+
+function getCacheTtl(sourceKey) {
+  return sourceKey === 'BTCUSD_CG' ? CACHE_TTL_COINGECKO : CACHE_TTL_DEFAULT
+}
 
 /**
  * 读取本地缓存的 K 线数据
@@ -45,7 +62,7 @@ function readCache(sourceKey) {
     const raw = localStorage.getItem(CACHE_PREFIX + sourceKey)
     if (!raw) return null
     const { timestamp, data } = JSON.parse(raw)
-    if (Date.now() - timestamp > CACHE_TTL) return null
+    if (Date.now() - timestamp > getCacheTtl(sourceKey)) return null
     if (!Array.isArray(data) || data.length === 0) return null
     return data
   } catch {
@@ -93,8 +110,11 @@ export async function loadKlines(sourceKey, onRefreshed) {
         return fresh
       }
     } catch (err) {
-      // 后台刷新失败：若有缓存则静默忽略；若首次加载则抛出由调用方处理
-      if (!hasCache) throw err
+      // 拉取失败：若有缓存则静默忽略；若无缓存则返回 null，由调用方回退到 mock 数据
+      if (!hasCache) {
+        console.warn(`[${sourceKey}] 首次加载失败，将回退到模拟数据:`, err)
+        return null
+      }
       console.warn(`[${sourceKey}] 后台刷新失败，继续使用缓存:`, err)
     }
     return cached
@@ -106,7 +126,7 @@ export async function loadKlines(sourceKey, onRefreshed) {
     return cached
   }
 
-  // 无缓存：必须等待首次拉取
+  // 无缓存：等待首次拉取，失败时回退到 mock 数据
   const fresh = await refresh()
   return fresh || mockPriceData
 }

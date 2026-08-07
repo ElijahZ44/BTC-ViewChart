@@ -71,10 +71,16 @@
       <!-- K线主图 -->
       <div class="bg-btc-card rounded-lg border border-btc-border p-4 mb-4 relative">
         <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-semibold">
-            {{ currentSourceInfo.label }} K线走势
-            <span class="text-xs font-normal text-gray-500 ml-2">数据来源: {{ currentSourceInfo.source }}</span>
-          </h2>
+          <div>
+            <h2 class="text-lg font-semibold">
+              {{ currentSourceInfo.label }} K线走势
+              <span class="text-xs font-normal text-gray-500 ml-2">数据来源: {{ currentSourceInfo.source }}</span>
+              <span class="text-xs font-normal text-gray-500 ml-2">| 覆盖范围: {{ currentSourceInfo.coverage }}</span>
+            </h2>
+            <div v-if="currentSourceInfo.note" class="text-xs text-yellow-500 mt-1">
+              ⚠️ {{ currentSourceInfo.note }}
+            </div>
+          </div>
           <span class="text-sm text-gray-400">每日收盘价格</span>
         </div>
         <div ref="mainChartRef" class="w-full" style="height: 400px;"></div>
