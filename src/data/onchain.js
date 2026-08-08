@@ -43,7 +43,6 @@ const mvrvZscoreData = [
   { time: 1717286400, value: 1.2 },   // 2024-06-01
   { time: 1737100800, value: 2.6 },   // 2025-01-20
   { time: 1753920000, value: 0.8 },   // 2025-08-01
-  { time: 1785600000, value: 1.0 },   // 2026-08-01
 ]
 
 // Puell Multiple 历史数据
@@ -80,7 +79,6 @@ const puellMultipleData = [
   { time: 1717286400, value: 2.8 },   // 2024-06-01
   { time: 1737100800, value: 4.0 },   // 2025-01-20
   { time: 1753920000, value: 1.8 },   // 2025-08-01
-  { time: 1785600000, value: 2.2 },   // 2026-08-01
 ]
 
 // SOPR (Spent Output Profit Ratio) 历史数据
@@ -118,7 +116,6 @@ const soprData = [
   { time: 1717286400, value: 1.4 },   // 2024-06-01
   { time: 1737100800, value: 1.9 },   // 2025-01-20
   { time: 1753920000, value: 1.15 },  // 2025-08-01
-  { time: 1785600000, value: 1.2 },   // 2026-08-01
 ]
 
 /**

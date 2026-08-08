@@ -212,6 +212,13 @@ const fearGreedColor = computed(() => {
 })
 
 // ===== 数据过滤 =====
+// 统一时间范围基准：以价格数据的时间范围为基准
+const priceTimeRange = computed(() => {
+  const data = priceData.value
+  if (!data.length) return { min: 0, max: 0 }
+  return { min: data[0].time, max: data[data.length - 1].time }
+})
+
 const filteredPriceData = computed(() => {
   const data = priceData.value
   if (!data.length) return []
@@ -223,6 +230,7 @@ const filteredPriceData = computed(() => {
   return data.filter(d => d.time >= cutoffTime)
 })
 
+// 指标数据过滤：限制在价格数据的时间范围内
 const filteredIndicatorData = computed(() => {
   let data
   if (currentIndicator.value === 'fng') {
@@ -230,12 +238,15 @@ const filteredIndicatorData = computed(() => {
   }
   data = INDICATOR_META[currentIndicator.value]?.data || []
   if (!data.length) return []
-  if (currentPeriod.value === 'all') return data
-  const lastTime = data[data.length - 1].time
+  const { min, max } = priceTimeRange.value
+  // 限制在价格数据时间范围内
+  let filtered = data.filter(d => d.time >= min && d.time <= max)
+  if (currentPeriod.value === 'all') return filtered
+  const lastTime = filtered.length ? filtered[filtered.length - 1].time : max
   const months = { '6m': 6, '1y': 12, '3y': 36, '5y': 60 }
   const monthsBack = months[currentPeriod.value]
   const cutoffTime = lastTime - monthsBack * 30 * 24 * 3600
-  return data.filter(d => d.time >= cutoffTime)
+  return filtered.filter(d => d.time >= cutoffTime)
 })
 
 // ===== 图表初始化 =====
@@ -302,9 +313,6 @@ const updatePriceChart = () => {
   if (!priceSeries) return
   const data = filteredPriceData.value.map(d => ({ time: d.time, value: d.price }))
   priceSeries.setData(data)
-  if (data.length > 0) {
-    priceChart.timeScale().fitContent()
-  }
 }
 
 const updateIndicatorChart = () => {
@@ -316,14 +324,31 @@ const updateIndicatorChart = () => {
     data = filteredIndicatorData.value.map(d => ({ time: d.time, value: d.value }))
   }
   indicatorSeries.setData(data)
-  if (data.length > 0) {
-    indicatorChart.timeScale().fitContent()
-  }
 }
 
 const updateCharts = () => {
   updatePriceChart()
   updateIndicatorChart()
+  
+  // 统一两个图表的可见时间范围：以价格图为基准
+  const priceData = filteredPriceData.value
+  if (priceData.length > 0) {
+    const firstTime = priceData[0].time
+    const lastTime = priceData[priceData.length - 1].time
+    
+    syncing = true
+    // 价格图适应内容
+    priceChart.timeScale().fitContent()
+    // 获取价格图的可见范围并应用到指标图
+    const visibleRange = priceChart.timeScale().getVisibleLogicalRange()
+    if (visibleRange) {
+      indicatorChart.timeScale().setVisibleLogicalRange(visibleRange)
+    } else {
+      // 如果获取不到范围，直接设置相同的时间范围
+      indicatorChart.timeScale().setVisibleRange({ from: firstTime, to: lastTime })
+    }
+    syncing = false
+  }
 }
 
 // ===== 恐惧贪婪指数（单独数据）=====
@@ -332,12 +357,15 @@ const fngData = ref([])
 const filteredFngData = computed(() => {
   const data = fngData.value
   if (!data.length) return []
-  if (currentPeriod.value === 'all') return data
-  const lastTime = data[data.length - 1].time
+  const { min, max } = priceTimeRange.value
+  // 限制在价格数据时间范围内
+  let filtered = data.filter(d => d.time >= min && d.time <= max)
+  if (currentPeriod.value === 'all') return filtered
+  const lastTime = filtered.length ? filtered[filtered.length - 1].time : max
   const months = { '6m': 6, '1y': 12, '3y': 36, '5y': 60 }
   const monthsBack = months[currentPeriod.value] || 24
   const cutoffTime = lastTime - monthsBack * 30 * 24 * 3600
-  return data.filter(d => d.time >= cutoffTime)
+  return filtered.filter(d => d.time >= cutoffTime)
 })
 
 const loadFearGreed = async () => {
@@ -349,7 +377,8 @@ const loadFearGreed = async () => {
     fearGreedValue.value = String(latest.value)
     fearGreedLabel.value = latest.classification
     if (currentIndicator.value === 'fng') {
-      updateIndicatorChart()
+      // 使用 updateCharts 确保两个图表时间范围同步
+      updateCharts()
     }
   } catch (err) {
     console.warn('恐惧贪婪指数加载失败:', err)
@@ -385,11 +414,8 @@ const loadPriceData = async () => {
 // ===== 监听 =====
 watch(currentPeriod, () => nextTick(() => updateCharts()))
 watch(currentIndicator, () => nextTick(() => {
-  if (currentIndicator.value === 'fng') {
-    updateIndicatorChart()
-  } else {
-    updateIndicatorChart()
-  }
+  // 切换指标时同步更新两个图表
+  updateCharts()
 }))
 
 // ===== 格式化 =====
